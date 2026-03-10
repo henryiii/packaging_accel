@@ -11,3 +11,23 @@ def parse_version(
 	int | None,
 	str | None,
 ]: ...
+
+
+def cmp_version(
+	left: tuple[
+		int | None,
+		tuple[int, ...],
+		tuple[str, int] | None,
+		int | None,
+		int | None,
+		str | None,
+	],
+	right: tuple[
+		int | None,
+		tuple[int, ...],
+		tuple[str, int] | None,
+		int | None,
+		int | None,
+		str | None,
+	],
+) -> int: ...
