@@ -112,12 +112,11 @@ mod _core {
             ));
         }
 
-        let mut parts = Vec::with_capacity(version.as_bytes().iter().filter(|&&b| b == b'.').count() + 1);
+        let mut parts =
+            Vec::with_capacity(version.as_bytes().iter().filter(|&&b| b == b'.').count() + 1);
         for segment in version.split('.') {
             let value = segment.parse::<u64>().map_err(|_| {
-                PyValueError::new_err(
-                    "version segments must be valid (64-bit) integers",
-                )
+                PyValueError::new_err("version segments must be valid (64-bit) integers")
             })?;
             parts.push(value);
         }
@@ -125,10 +124,7 @@ mod _core {
     }
 
     #[pyfunction]
-    fn parse_version(
-        py: Python,
-        version: &str,
-    ) -> PyResult<ParseVersionResult> {
+    fn parse_version(py: Python, version: &str) -> PyResult<ParseVersionResult> {
         let version = version.trim();
         let bytes = version.as_bytes();
         let mut i = 0usize;
@@ -149,9 +145,8 @@ mod _core {
         }
 
         let mut release: SmallVec<[u64; 4]> = SmallVec::new();
-        let (first_release, mut next_i) = parse_digits(bytes, i).ok_or_else(|| {
-            PyValueError::new_err("invalid version: expected release segment")
-        })?;
+        let (first_release, mut next_i) = parse_digits(bytes, i)
+            .ok_or_else(|| PyValueError::new_err("invalid version: expected release segment"))?;
         release.push(first_release);
         i = next_i;
 
