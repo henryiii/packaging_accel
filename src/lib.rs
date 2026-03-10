@@ -6,41 +6,55 @@ use pyo3::prelude::*;
 #[pymodule]
 mod _core {
     use pyo3::{exceptions::PyValueError, prelude::*, types::PyTuple};
+    use smallvec::SmallVec;
 
-    const PRE_LABELS: [(&str, &str); 8] = [
-        ("preview", "rc"),
-        ("alpha", "a"),
-        ("beta", "b"),
-        ("pre", "rc"),
-        ("rc", "rc"),
-        ("a", "a"),
-        ("b", "b"),
-        ("c", "rc"),
+    const PRE_LABELS: [(&[u8], &str); 8] = [
+        (b"preview", "rc"),
+        (b"alpha", "a"),
+        (b"beta", "b"),
+        (b"pre", "rc"),
+        (b"rc", "rc"),
+        (b"a", "a"),
+        (b"b", "b"),
+        (b"c", "rc"),
     ];
 
-    const POST_LABELS: [(&str, &str); 3] = [("post", "post"), ("rev", "post"), ("r", "post")];
+    const POST_LABELS: [(&[u8], &str); 3] = [(b"post", "post"), (b"rev", "post"), (b"r", "post")];
 
-    fn parse_u64_component(input: &str) -> Option<u64> {
-        if input.is_empty() || !input.chars().all(|c| c.is_ascii_digit()) {
-            return None;
+    fn starts_with_ci(bytes: &[u8], i: usize, pattern: &[u8]) -> bool {
+        if i + pattern.len() > bytes.len() {
+            return false;
         }
-        input.parse::<u64>().ok()
+        bytes[i..i + pattern.len()]
+            .iter()
+            .zip(pattern.iter())
+            .all(|(left, right)| left.to_ascii_lowercase() == *right)
     }
 
-    fn parse_digits(s: &str, mut i: usize) -> Option<(u64, usize)> {
+    fn parse_digits(bytes: &[u8], mut i: usize) -> Option<(u64, usize)> {
         let start = i;
-        while i < s.len() && s.as_bytes()[i].is_ascii_digit() {
+        let mut value = 0u64;
+
+        while i < bytes.len() {
+            let b = bytes[i];
+            if !b.is_ascii_digit() {
+                break;
+            }
+            let digit = (b - b'0') as u64;
+            value = value.checked_mul(10)?.checked_add(digit)?;
             i += 1;
         }
+
         if i == start {
             return None;
         }
-        parse_u64_component(&s[start..i]).map(|value| (value, i))
+
+        Some((value, i))
     }
 
-    fn consume_optional_sep(s: &str, i: usize) -> usize {
-        if i < s.len() {
-            let b = s.as_bytes()[i];
+    fn consume_optional_sep(bytes: &[u8], i: usize) -> usize {
+        if i < bytes.len() {
+            let b = bytes[i];
             if b == b'.' || b == b'_' || b == b'-' {
                 return i + 1;
             }
@@ -48,30 +62,37 @@ mod _core {
         i
     }
 
-    fn parse_label<'a>(s: &'a str, i: usize, labels: &[(&'a str, &'a str)]) -> Option<(&'a str, usize)> {
-        labels
-            .iter()
-            .find_map(|(label, canonical)| s[i..].starts_with(label).then_some((*canonical, i + label.len())))
+    fn parse_label<'a>(bytes: &[u8], i: usize, labels: &[(&[u8], &'a str)]) -> Option<(&'a str, usize)> {
+        labels.iter().find_map(|(label, canonical)| {
+            starts_with_ci(bytes, i, label).then_some((*canonical, i + label.len()))
+        })
     }
 
     #[pyfunction]
-    fn split_version(py: Python, version: String) -> PyResult<Py<PyTuple>> {
-        let parts: Vec<u64> = version
-            .split('.')
-            .map(|s| s.parse::<u64>())
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| {
+    fn split_version(py: Python, version: &str) -> PyResult<Py<PyTuple>> {
+        let version = version.trim();
+        if version.is_empty() {
+            return Err(PyValueError::new_err(
+                "version segments must be valid (64-bit) integers",
+            ));
+        }
+
+        let mut parts = Vec::with_capacity(version.as_bytes().iter().filter(|&&b| b == b'.').count() + 1);
+        for segment in version.split('.') {
+            let value = segment.parse::<u64>().map_err(|_| {
                 PyValueError::new_err(
                     "version segments must be valid (64-bit) integers",
                 )
             })?;
+            parts.push(value);
+        }
         Ok(PyTuple::new(py, parts)?.into())
     }
 
     #[pyfunction]
     fn parse_version(
         py: Python,
-        version: String,
+        version: &str,
     ) -> PyResult<(
         Option<i64>,
         Py<PyTuple>,
@@ -80,16 +101,17 @@ mod _core {
         Option<u64>,
         Option<String>,
     )> {
-        let s = version.to_ascii_lowercase();
+        let version = version.trim();
+        let bytes = version.as_bytes();
         let mut i = 0usize;
 
-        if s.starts_with('v') {
+        if i < bytes.len() && (bytes[i] == b'v' || bytes[i] == b'V') {
             i = 1;
         }
 
         let mut epoch = None;
-        if let Some((epoch_u64, next_i)) = parse_digits(&s, i) {
-            if next_i < s.len() && s.as_bytes()[next_i] == b'!' {
+        if let Some((epoch_u64, next_i)) = parse_digits(bytes, i) {
+            if next_i < bytes.len() && bytes[next_i] == b'!' {
                 let parsed_epoch = i64::try_from(epoch_u64).map_err(|_| {
                     PyValueError::new_err("epoch is too large to fit into a 64-bit signed integer")
                 })?;
@@ -98,16 +120,16 @@ mod _core {
             }
         }
 
-        let mut release = Vec::new();
-        let (first_release, mut next_i) = parse_digits(&s, i).ok_or_else(|| {
+        let mut release: SmallVec<[u64; 4]> = SmallVec::new();
+        let (first_release, mut next_i) = parse_digits(bytes, i).ok_or_else(|| {
             PyValueError::new_err("invalid version: expected release segment")
         })?;
         release.push(first_release);
         i = next_i;
 
-        while i < s.len() && s.as_bytes()[i] == b'.' {
+        while i < bytes.len() && bytes[i] == b'.' {
             next_i = i + 1;
-            let (part, parsed_i) = parse_digits(&s, next_i).ok_or_else(|| {
+            let (part, parsed_i) = parse_digits(bytes, next_i).ok_or_else(|| {
                 PyValueError::new_err("invalid version: release segments must be numeric")
             })?;
             release.push(part);
@@ -116,10 +138,10 @@ mod _core {
 
         let mut pre = None;
         let pre_start = i;
-        let pre_with_sep = consume_optional_sep(&s, i);
-        if let Some((label, label_end)) = parse_label(&s, pre_with_sep, &PRE_LABELS) {
-            let mut n_i = consume_optional_sep(&s, label_end);
-            let num = if let Some((n, parsed_i)) = parse_digits(&s, n_i) {
+        let pre_with_sep = consume_optional_sep(bytes, i);
+        if let Some((label, label_end)) = parse_label(bytes, pre_with_sep, &PRE_LABELS) {
+            let mut n_i = consume_optional_sep(bytes, label_end);
+            let num = if let Some((n, parsed_i)) = parse_digits(bytes, n_i) {
                 n_i = parsed_i;
                 n
             } else {
@@ -133,17 +155,17 @@ mod _core {
 
         let mut post = None;
         let post_start = i;
-        if i < s.len() && s.as_bytes()[i] == b'-' {
-            if let Some((n, parsed_i)) = parse_digits(&s, i + 1) {
+        if i < bytes.len() && bytes[i] == b'-' {
+            if let Some((n, parsed_i)) = parse_digits(bytes, i + 1) {
                 post = Some(n);
                 i = parsed_i;
             }
         }
         if post.is_none() {
-            let post_with_sep = consume_optional_sep(&s, post_start);
-            if let Some((_label, label_end)) = parse_label(&s, post_with_sep, &POST_LABELS) {
-                let mut n_i = consume_optional_sep(&s, label_end);
-                let num = if let Some((n, parsed_i)) = parse_digits(&s, n_i) {
+            let post_with_sep = consume_optional_sep(bytes, post_start);
+            if let Some((_label, label_end)) = parse_label(bytes, post_with_sep, &POST_LABELS) {
+                let mut n_i = consume_optional_sep(bytes, label_end);
+                let num = if let Some((n, parsed_i)) = parse_digits(bytes, n_i) {
                     n_i = parsed_i;
                     n
                 } else {
@@ -156,10 +178,10 @@ mod _core {
 
         let mut dev = None;
         let dev_start = i;
-        let dev_with_sep = consume_optional_sep(&s, i);
-        if s[dev_with_sep..].starts_with("dev") {
-            let mut n_i = consume_optional_sep(&s, dev_with_sep + 3);
-            let num = if let Some((n, parsed_i)) = parse_digits(&s, n_i) {
+        let dev_with_sep = consume_optional_sep(bytes, i);
+        if starts_with_ci(bytes, dev_with_sep, b"dev") {
+            let mut n_i = consume_optional_sep(bytes, dev_with_sep + 3);
+            let num = if let Some((n, parsed_i)) = parse_digits(bytes, n_i) {
                 n_i = parsed_i;
                 n
             } else {
@@ -172,13 +194,13 @@ mod _core {
         }
 
         let mut local = None;
-        if i < s.len() && s.as_bytes()[i] == b'+' {
+        if i < bytes.len() && bytes[i] == b'+' {
             i += 1;
             let local_start = i;
             let mut seg_len = 0usize;
-            while i < s.len() {
-                let b = s.as_bytes()[i];
-                if b.is_ascii_lowercase() || b.is_ascii_digit() {
+            while i < bytes.len() {
+                let b = bytes[i];
+                if b.is_ascii_alphanumeric() {
                     seg_len += 1;
                     i += 1;
                     continue;
@@ -200,16 +222,16 @@ mod _core {
                     "invalid version: local version is malformed",
                 ));
             }
-            local = Some(s[local_start..i].to_string());
+            local = Some(version[local_start..i].to_ascii_lowercase());
         }
 
-        if i != s.len() {
+        if i != bytes.len() {
             return Err(PyValueError::new_err("invalid version"));
         }
 
         Ok((
             epoch,
-            PyTuple::new(py, release)?.into(),
+            PyTuple::new(py, release.iter().copied())?.into(),
             pre,
             post,
             dev,

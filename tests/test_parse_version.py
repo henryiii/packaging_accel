@@ -28,6 +28,21 @@ def test_parse_version_invalid_raises_value_error() -> None:
         parse_version("1..2")
 
 
+def test_parse_version_allows_unicode_whitespace_only() -> None:
+    epoch, release, pre, post, dev, local = parse_version("\u2003 1.2.3rc1 \u00a0")
+    assert epoch is None
+    assert release == (1, 2, 3)
+    assert pre == ("rc", 1)
+    assert post is None
+    assert dev is None
+    assert local is None
+
+
+def test_parse_version_rejects_non_whitespace_unicode() -> None:
+    with pytest.raises(ValueError):
+        parse_version("1.2.3\u03b1")
+
+
 @pytest.mark.parametrize(
     ("version", "expected_pre", "expected_post", "expected_local"),
     [
