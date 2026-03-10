@@ -134,15 +134,14 @@ mod _core {
         }
 
         let mut epoch = None;
-        if let Some((epoch_u64, next_i)) = parse_digits(bytes, i) {
-            if next_i < bytes.len() && bytes[next_i] == b'!' {
+        if let Some((epoch_u64, next_i)) = parse_digits(bytes, i)
+            && next_i < bytes.len() && bytes[next_i] == b'!' {
                 let parsed_epoch = i64::try_from(epoch_u64).map_err(|_| {
                     PyValueError::new_err("epoch is too large to fit into a 64-bit signed integer")
                 })?;
                 epoch = Some(parsed_epoch);
                 i = next_i + 1;
             }
-        }
 
         let mut release: SmallVec<[u64; 4]> = SmallVec::new();
         let (first_release, mut next_i) = parse_digits(bytes, i)
@@ -172,12 +171,11 @@ mod _core {
 
         let mut post = None;
         let post_start = i;
-        if i < bytes.len() && bytes[i] == b'-' {
-            if let Some((n, parsed_i)) = parse_digits(bytes, i + 1) {
+        if i < bytes.len() && bytes[i] == b'-'
+            && let Some((n, parsed_i)) = parse_digits(bytes, i + 1) {
                 post = Some(n);
                 i = parsed_i;
             }
-        }
         if post.is_none() {
             let post_with_sep = consume_optional_sep(bytes, post_start);
             if let Some((_label, label_end)) = parse_label(bytes, post_with_sep, &POST_LABELS) {
