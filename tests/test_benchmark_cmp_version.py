@@ -17,6 +17,11 @@ BENCHMARK_CASES = [
 ]
 
 
+def _cmp_versions_no_cache(left: Version, right: Version) -> int:
+    left._key_cache = None
+    right._key_cache = None
+    return (left > right) - (left < right)
+
 def _cmp_versions(left: Version, right: Version) -> int:
     return (left > right) - (left < right)
 
@@ -42,11 +47,29 @@ def test_benchmark_cmp_version(benchmark: pytest.BenchmarkFixture, left: str, ri
     ids=[f"{left}__{right}" for left, right in BENCHMARK_CASES],
 )
 @pytest.mark.benchmark(group="cmp-version")
-def test_benchmark_packaging_version_compare(
+def test_benchmark_packaging_version_compare_cold(
     benchmark: pytest.BenchmarkFixture, left: str, right: str
 ) -> None:
     left_version = Version(left)
     right_version = Version(right)
+
+    result = benchmark(_cmp_versions_no_cache, left_version, right_version)
+    assert result in (-1, 0, 1)
+
+
+@pytest.mark.parametrize(
+    ("left", "right"),
+    BENCHMARK_CASES,
+    ids=[f"{left}__{right}" for left, right in BENCHMARK_CASES],
+)
+@pytest.mark.benchmark(group="cmp-version")
+def test_benchmark_packaging_version_compare_hot(
+    benchmark: pytest.BenchmarkFixture, left: str, right: str
+) -> None:
+    left_version = Version(left)
+    right_version = Version(right)
+    left_version._key
+    right_version._key
 
     result = benchmark(_cmp_versions, left_version, right_version)
     assert result in (-1, 0, 1)
