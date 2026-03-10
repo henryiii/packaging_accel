@@ -8,15 +8,41 @@ mod _core {
     use pyo3::{exceptions::PyValueError, prelude::*, types::PyTuple};
     use smallvec::SmallVec;
 
-    const PRE_LABELS: [(&[u8], &str); 8] = [
-        (b"preview", "rc"),
-        (b"alpha", "a"),
-        (b"beta", "b"),
-        (b"pre", "rc"),
-        (b"rc", "rc"),
-        (b"a", "a"),
-        (b"b", "b"),
-        (b"c", "rc"),
+    #[derive(Clone, Copy)]
+    enum PreTag {
+        A,
+        B,
+        Rc,
+    }
+
+    impl PreTag {
+        fn as_str(self) -> &'static str {
+            match self {
+                Self::A => "a",
+                Self::B => "b",
+                Self::Rc => "rc",
+            }
+        }
+    }
+
+    type ParseVersionResult = (
+        Option<i64>,
+        Py<PyTuple>,
+        Option<(String, u64)>,
+        Option<u64>,
+        Option<u64>,
+        Option<String>,
+    );
+
+    const PRE_LABELS: [(&[u8], PreTag); 8] = [
+        (b"preview", PreTag::Rc),
+        (b"alpha", PreTag::A),
+        (b"beta", PreTag::B),
+        (b"pre", PreTag::Rc),
+        (b"rc", PreTag::Rc),
+        (b"a", PreTag::A),
+        (b"b", PreTag::B),
+        (b"c", PreTag::Rc),
     ];
 
     const POST_LABELS: [(&[u8], &str); 3] = [(b"post", "post"), (b"rev", "post"), (b"r", "post")];
@@ -62,10 +88,19 @@ mod _core {
         i
     }
 
-    fn parse_label<'a>(bytes: &[u8], i: usize, labels: &[(&[u8], &'a str)]) -> Option<(&'a str, usize)> {
+    fn parse_label<T: Copy>(bytes: &[u8], i: usize, labels: &[(&[u8], T)]) -> Option<(T, usize)> {
         labels.iter().find_map(|(label, canonical)| {
             starts_with_ci(bytes, i, label).then_some((*canonical, i + label.len()))
         })
+    }
+
+    fn parse_optional_number(bytes: &[u8], i: usize) -> (u64, usize) {
+        let n_i = consume_optional_sep(bytes, i);
+        if let Some((n, parsed_i)) = parse_digits(bytes, n_i) {
+            (n, parsed_i)
+        } else {
+            (0, n_i)
+        }
     }
 
     #[pyfunction]
@@ -93,14 +128,7 @@ mod _core {
     fn parse_version(
         py: Python,
         version: &str,
-    ) -> PyResult<(
-        Option<i64>,
-        Py<PyTuple>,
-        Option<(String, u64)>,
-        Option<u64>,
-        Option<u64>,
-        Option<String>,
-    )> {
+    ) -> PyResult<ParseVersionResult> {
         let version = version.trim();
         let bytes = version.as_bytes();
         let mut i = 0usize;
@@ -136,18 +164,12 @@ mod _core {
             i = parsed_i;
         }
 
-        let mut pre = None;
+        let mut pre: Option<(PreTag, u64)> = None;
         let pre_start = i;
         let pre_with_sep = consume_optional_sep(bytes, i);
         if let Some((label, label_end)) = parse_label(bytes, pre_with_sep, &PRE_LABELS) {
-            let mut n_i = consume_optional_sep(bytes, label_end);
-            let num = if let Some((n, parsed_i)) = parse_digits(bytes, n_i) {
-                n_i = parsed_i;
-                n
-            } else {
-                0
-            };
-            pre = Some((label.to_string(), num));
+            let (num, n_i) = parse_optional_number(bytes, label_end);
+            pre = Some((label, num));
             i = n_i;
         } else {
             i = pre_start;
@@ -164,13 +186,7 @@ mod _core {
         if post.is_none() {
             let post_with_sep = consume_optional_sep(bytes, post_start);
             if let Some((_label, label_end)) = parse_label(bytes, post_with_sep, &POST_LABELS) {
-                let mut n_i = consume_optional_sep(bytes, label_end);
-                let num = if let Some((n, parsed_i)) = parse_digits(bytes, n_i) {
-                    n_i = parsed_i;
-                    n
-                } else {
-                    0
-                };
+                let (num, n_i) = parse_optional_number(bytes, label_end);
                 post = Some(num);
                 i = n_i;
             }
@@ -180,13 +196,7 @@ mod _core {
         let dev_start = i;
         let dev_with_sep = consume_optional_sep(bytes, i);
         if starts_with_ci(bytes, dev_with_sep, b"dev") {
-            let mut n_i = consume_optional_sep(bytes, dev_with_sep + 3);
-            let num = if let Some((n, parsed_i)) = parse_digits(bytes, n_i) {
-                n_i = parsed_i;
-                n
-            } else {
-                0
-            };
+            let (num, n_i) = parse_optional_number(bytes, dev_with_sep + 3);
             dev = Some(num);
             i = n_i;
         } else {
@@ -232,7 +242,7 @@ mod _core {
         Ok((
             epoch,
             PyTuple::new(py, release.iter().copied())?.into(),
-            pre,
+            pre.map(|(tag, n)| (tag.as_str().to_string(), n)),
             post,
             dev,
             local,
